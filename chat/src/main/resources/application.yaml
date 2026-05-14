@@ -1,0 +1,51 @@
+spring:
+  application:
+    name: pulse-chat
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/pulse
+    username: pulse
+    password: 12345
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+  data:
+    redis:
+      host: localhost
+      port: 6379
+  kafka:
+    bootstrap-servers: localhost:9092
+    consumer:
+      group-id: pulse-chat-realtime-${random.uuid}
+      auto-offset-reset: latest
+
+security:
+  jwt:
+    secret: "change-this-secret-key-to-at-least-32-characters"
+    expiration-seconds: 3600
+
+app:
+  events:
+    mode: local
+    topic: chat.messages.created
+    fallback-on-kafka-error: true
+  message-policy:
+    min-length: 1
+    max-length: 2000
+    max-messages-per-window: 10
+    window-seconds: 10
+    duplicate-cooldown-seconds: 5
+  outbox:
+    worker-delay-ms: 2000
+    retry:
+      max-retries: 5
+      max-backoff-seconds: 60
+      step-backoff-seconds: 5
+  realtime:
+    instance-id: ${HOSTNAME:${random.uuid}}

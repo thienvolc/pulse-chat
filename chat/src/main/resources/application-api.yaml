@@ -1,0 +1,5 @@
+app:
+  runtime:
+    role: api
+  events:
+    mode: kafka
