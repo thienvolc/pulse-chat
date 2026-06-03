@@ -1,19 +1,21 @@
 package com.pulse.chat.domain.events.outbox;
 
+import com.pulse.chat.domain.events.outbox.entity.OutboxStatus;
+import com.pulse.chat.domain.events.outbox.repository.EventOutboxRepository;
+import jakarta.annotation.Nullable;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
-import com.pulse.chat.domain.events.dlt.DltEventRepository;
-import com.pulse.chat.domain.events.dlt.DltEventStatus;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
 @Service
-@lombok.RequiredArgsConstructor
+@RequiredArgsConstructor
 public class OutboxMetricsService {
+
     private final EventOutboxRepository repository;
-    private final DltEventRepository dltEventRepository;
+
     private final AtomicLong replaySuccessCount = new AtomicLong();
     private final AtomicLong replayFailCount = new AtomicLong();
 
@@ -31,35 +33,23 @@ public class OutboxMetricsService {
         Long oldestFailedAgeSeconds = repository.findFirstByStatusOrderByUpdatedAtAsc(OutboxStatus.FAILED)
                 .map(e -> Duration.between(e.getUpdatedAt(), Instant.now()).getSeconds())
                 .orElse(null);
+
         return new OutboxMetricsSnapshot(
                 failed,
                 pending,
-                dltEventRepository.countByStatus(DltEventStatus.PENDING),
                 replaySuccessCount.get(),
                 replayFailCount.get(),
-                oldestFailedAgeSeconds == null ? -1L : oldestFailedAgeSeconds
-        );
-    }
-
-    public Map<String, Object> snapshot() {
-        OutboxMetricsSnapshot snapshot = getSnapshot();
-        return Map.of(
-                "failedCount", snapshot.failedCount(),
-                "pendingCount", snapshot.pendingCount(),
-                "dltPendingCount", snapshot.dltPendingCount(),
-                "replaySuccessCount", snapshot.replaySuccessCount(),
-                "replayFailCount", snapshot.replayFailCount(),
-                "oldestFailedAgeSeconds", snapshot.oldestFailedAgeSeconds()
+                oldestFailedAgeSeconds
         );
     }
 
     public record OutboxMetricsSnapshot(
             long failedCount,
             long pendingCount,
-            long dltPendingCount,
             long replaySuccessCount,
             long replayFailCount,
-            long oldestFailedAgeSeconds
+            @Nullable Long oldestFailedAgeSeconds
     ) {
     }
 }
+

@@ -6,16 +6,20 @@ import com.pulse.chat.domain.auth.dto.LoginRequest;
 import com.pulse.chat.domain.auth.dto.RegisterRequest;
 import com.pulse.chat.domain.auth.service.AuthService;
 import jakarta.validation.Valid;
-import org.springframework.web.bind.annotation.*;
+import lombok.RequiredArgsConstructor;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 
 @RestController
-@lombok.RequiredArgsConstructor
+@RequiredArgsConstructor
 @RequestMapping("/api/v1/auth")
 public class AuthController {
-    private final AuthService authService;
-    private final ResponseFactory responseFactory;
 
-    
+    private final AuthService authService;
+
+    private final ResponseFactory responseFactory;
 
     @PostMapping("/register")
     public ResponseDto register(@Valid @RequestBody RegisterRequest request) {

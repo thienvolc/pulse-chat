@@ -1,12 +1,13 @@
 package com.pulse.chat.domain.events.outbox;
 
 import com.pulse.chat.infrastructure.config.prop.OutboxRetryProperties;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
 
 @Component
-@lombok.RequiredArgsConstructor
+@RequiredArgsConstructor
 public class OutboxRetryPolicy {
     private final OutboxRetryProperties properties;
 
@@ -15,7 +16,10 @@ public class OutboxRetryPolicy {
     }
 
     public Instant nextRetryAt(int retries, Instant now) {
-        long delaySeconds = Math.min(properties.maxBackoffSeconds(), retries * properties.stepBackoffSeconds());
+        long delaySeconds = Math.min(
+                properties.maxBackoffSeconds(),
+                retries * properties.stepBackoffSeconds());
+
         return now.plusSeconds(delaySeconds);
     }
 }

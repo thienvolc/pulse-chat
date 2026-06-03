@@ -1,5 +1,6 @@
 package com.pulse.chat.infrastructure.service;
 
+import com.pulse.chat.infrastructure.constant.ClaimConstant;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
@@ -20,23 +21,28 @@ public class JwtService {
 
     public JwtService(@Value("${security.jwt.secret}") String secret,
                       @Value("${security.jwt.expiration-seconds:3600}") long expirationSeconds) {
+
         this.key = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
         this.expirationSeconds = expirationSeconds;
     }
 
     public String generateToken(UUID userId, String username, String role) {
-        Instant now = Instant.now();
+        Instant issuedAt = Instant.now();
+        Instant expiredAt = issuedAt.plusSeconds(expirationSeconds);
+
         return Jwts.builder()
                 .subject(userId.toString())
-                .claim("username", username)
-                .claim("role", role)
-                .issuedAt(Date.from(now))
-                .expiration(Date.from(now.plusSeconds(expirationSeconds)))
+                .claim(ClaimConstant.USERNAME, username)
+                .claim(ClaimConstant.ROLE, role)
+                .issuedAt(Date.from(issuedAt))
+                .expiration(Date.from(expiredAt))
                 .signWith(key)
                 .compact();
     }
 
     public Claims parse(String token) {
-        return Jwts.parser().verifyWith(key).build().parseSignedClaims(token).getPayload();
+        return Jwts.parser().verifyWith(key)
+                .build().parseSignedClaims(token)
+                .getPayload();
     }
 }

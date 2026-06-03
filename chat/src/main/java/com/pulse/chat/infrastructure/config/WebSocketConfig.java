@@ -1,6 +1,5 @@
 package com.pulse.chat.infrastructure.config;
 
-import com.pulse.chat.domain.notification.service.ChatRealtimeNotifier;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.messaging.simp.config.MessageBrokerRegistry;
 import org.springframework.web.socket.config.annotation.EnableWebSocketMessageBroker;

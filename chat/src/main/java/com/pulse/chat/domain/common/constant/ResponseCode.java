@@ -27,7 +27,12 @@ public enum ResponseCode {
     REBUILD_IN_PROGRESS("ERR_REBUILD_IN_PROGRESS", "projection.rebuild.in_progress", CONFLICT),
     ACCESS_DENIED("ERR_ACCESS_DENIED", "access_denied", FORBIDDEN),
     INTERNAL_EXCEPTION("ERR_INTERNAL_EXCEPTION", "internal_server_error", INTERNAL_SERVER_ERROR),
-    SUCCESS("SUCCESS", "request.ok", OK);
+    SUCCESS("SUCCESS", "request.ok", OK),
+    USER_NOT_FOUND("ERR_USER_NOT_FOUND", "user.not_found", NOT_FOUND),
+    MEMBER_ALREADY_EXISTS("ERR_MEMBER_ALREADY_EXISTS", "member.already_exists", CONFLICT),
+    OUTBOX_EVENT_NOT_FOUND("ERR_OUTBOX_EVENT_NOT_FOUND", "outbox.event.not_found", NOT_FOUND),
+    DLT_EVENT_NOT_FOUND("ERR_DLT_EVENT_NOT_FOUND", "dlt.event.not_found", NOT_FOUND),
+    DIRECT_CONVERSATION_ALREADY_EXISTS("ERR_DIRECT_CONVERSATION_ALREADY_EXISTS", "conversation.direct.already_exists", CONFLICT);
 
     private final String code;
     private final String defaultMessage;

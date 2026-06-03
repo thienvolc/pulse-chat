@@ -2,7 +2,7 @@ package com.pulse.chat.api.rest;
 
 import com.pulse.chat.app.dto.response.ResponseDto;
 import com.pulse.chat.app.service.ResponseFactory;
-import com.pulse.chat.domain.search.service.SearchService;
+import com.pulse.chat.domain.search.SearchService;
 import com.pulse.chat.infrastructure.service.UserPrincipal;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;

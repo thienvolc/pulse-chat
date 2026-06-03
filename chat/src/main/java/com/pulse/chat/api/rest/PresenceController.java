@@ -2,7 +2,7 @@ package com.pulse.chat.api.rest;
 
 import com.pulse.chat.app.dto.response.ResponseDto;
 import com.pulse.chat.app.service.ResponseFactory;
-import com.pulse.chat.domain.presence.service.PresenceService;
+import com.pulse.chat.domain.presence.UserPresenceService;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -15,7 +15,7 @@ import java.util.UUID;
 @lombok.RequiredArgsConstructor
 @RequestMapping("/api/v1/presence")
 public class PresenceController {
-    private final PresenceService presenceService;
+    private final UserPresenceService presenceService;
     private final ResponseFactory responseFactory;
 
     

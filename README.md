@@ -1,5 +1,3 @@
-# ⭐ 100% Vibe Coded ⭐
-
 # Pulse Chat
 
 Pulse Chat is a Java/Spring backend showcase focused on concurrency, distributed delivery, CQRS-lite read models, and operational reliability.

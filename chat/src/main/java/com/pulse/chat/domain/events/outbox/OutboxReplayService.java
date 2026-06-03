@@ -1,76 +1,69 @@
 package com.pulse.chat.domain.events.outbox;
 
 import com.pulse.chat.domain.events.ReplaySupport;
+import com.pulse.chat.domain.events.outbox.dto.ReplaySummary;
+import com.pulse.chat.domain.events.outbox.entity.OutboxStatus;
+import com.pulse.chat.domain.events.outbox.repository.EventOutboxRepository;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
 @Service
-@lombok.RequiredArgsConstructor
+@RequiredArgsConstructor
 public class OutboxReplayService {
+
     private final EventOutboxRepository repository;
     private final OutboxPublishExecutor publishExecutor;
     private final OutboxMetricsService metricsService;
+    private final OutboxClaimService claimService;
 
     @Transactional(readOnly = true)
     public long countReplayCandidates() {
         return repository.countByStatus(OutboxStatus.FAILED);
     }
 
-    @Transactional
     public ReplaySummary replayFailed(Integer requestedLimit) {
         int limit = ReplaySupport.normalizeLimit(requestedLimit);
-        List<EventOutboxEntity> failed = repository.findTop200ByStatusOrderByUpdatedAtAsc(OutboxStatus.FAILED);
+        List<UUID> failed = repository.findTop200IdsShouldBeReplay(OutboxStatus.FAILED);
+
         int processed = 0;
         int succeeded = 0;
         int failedAgain = 0;
-        for (EventOutboxEntity item : failed) {
+
+        for (UUID id : failed) {
             if (processed >= limit) {
                 break;
             }
-            if (!claimForReplay(item.getId())) {
+
+            var item = claimService.claimForReplay(id);
+
+            if (item.isEmpty()) {
+                failedAgain += recordFailure();
                 continue;
             }
+
             processed++;
-            EventOutboxEntity claimed = loadClaimed(item.getId());
-            if (claimed == null) {
-                failedAgain++;
-                metricsService.recordReplayFailure();
-                continue;
-            }
-            publishExecutor.processClaimed(claimed);
-            if (claimed.getStatus() == OutboxStatus.SENT) {
-                succeeded++;
-                metricsService.recordReplaySuccess();
+            var success = publishExecutor.processClaimed(item.get().getId());
+            if (success) {
+                succeeded += recordSuccess();
             } else {
-                failedAgain++;
-                metricsService.recordReplayFailure();
+                failedAgain += recordFailure();
             }
         }
+
         return new ReplaySummary(processed, succeeded, failedAgain);
     }
 
-    private boolean claimForReplay(UUID outboxId) {
-        int updated = repository.claimFailedForReplay(
-                outboxId,
-                OutboxStatus.FAILED,
-                OutboxStatus.PROCESSING,
-                Instant.now()
-        );
-        return updated > 0;
+    private int recordSuccess() {
+        metricsService.recordReplaySuccess();
+        return 1;
     }
 
-    private EventOutboxEntity loadClaimed(UUID outboxId) {
-        return ReplaySupport.loadClaimed(
-                outboxId,
-                repository::findById,
-                item -> item.getStatus() == OutboxStatus.PROCESSING
-        );
-    }
-
-    public record ReplaySummary(int processed, int succeeded, int failedAgain) {
+    private int recordFailure() {
+        metricsService.recordReplayFailure();
+        return 1;
     }
 }
