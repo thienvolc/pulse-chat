@@ -1,201 +1,176 @@
 # Pulse Chat
 
-Pulse Chat is a Java/Spring backend showcase focused on concurrency, distributed delivery, CQRS-lite read models, and operational reliability.
+A backend showcase built around the hard parts of chat systems: reliable async delivery, distributed realtime routing, idempotent writes, and read-model separation — all within a modular monolith that keeps complexity visible rather than hidden.
 
-The project is intentionally built as a modular monolith so core backend concerns can be shipped and explained clearly without hiding complexity behind a microservice split.
-
-## What This Project Demonstrates
-
-- Modular monolith design with clear feature boundaries
-- JWT-based auth and secured REST APIs
-- Direct chat and group chat membership lifecycle
-- CQRS-lite separation between command path and conversation-list read model
-- Idempotent send-message flow across API, DB, and event publishing
-- Outbox pattern for reliable async event delivery
-- Kafka-based realtime fanout with retry, DLT, and replay support
-- Distributed ownership routing for multi-instance realtime delivery
-- Rebuild/backfill workflow for read-model recovery
+---
 
 ## Tech Stack
 
-- Java 21
-- Spring Boot 4
-- Spring Web
-- Spring Security
-- Spring Data JPA
-- Spring Validation
-- Spring WebSocket
-- Spring Kafka
-- PostgreSQL
-- Redis
-- H2 for tests
-- Lombok
-- JWT (`jjwt`)
+| Layer | Technology |
+|---|---|
+| Runtime | Java 21 |
+| Framework | Spring Boot 3, Spring Web, Spring Security |
+| Persistence | Spring Data JPA, PostgreSQL |
+| Messaging | Spring Kafka |
+| Realtime | Spring WebSocket (STOMP) |
+| Cache / Routing | Redis |
+| Auth | JWT (`jjwt`) |
+| Utilities | Lombok |
 
-## Repository Layout
+---
 
-- [`chat/`](./chat): main Spring Boot application
-- [`SPRINTS.md`](./docs/SPRINTS.md): implementation backlog and execution history
-- [`DOD_EVIDENCE_MATRIX.md`](./docs/DOD_EVIDENCE_MATRIX.md): delivery evidence snapshot by sprint
-- [`ARCHITECTURE_OVERVIEW.md`](./docs/ARCHITECTURE_OVERVIEW.md): architecture, flows, and tradeoffs
-- sprint/runbook files at repo root: frozen evidence for specific milestones
+## Architecture Overview
 
-## Architecture Snapshot
+```
+api/rest          ← HTTP entrypoints, no business logic
+domain/
+  auth            ← register, login, JWT issuance
+  chat_core       ← conversations, membership, message command path, read model
+  events          ← outbox, publisher switching, DLT capture, replay
+  notification    ← realtime fanout, consumer-side dedupe
+  presence        ← online status, instance ownership routing
+  search          ← full-text message search (PostgreSQL)
+  user            ← user entity
+app/              ← shared concerns: error handling, response wrapper
+infrastructure/   ← security config, property binding, runtime wiring
+```
 
-Main modules inside `chat/src/main/java/com/pulse/chat/domain`:
+The project is structured as a **modular monolith**: one deployable unit with well-defined internal boundaries. Each domain module owns its entities, repositories, and use cases. Cross-domain calls go through explicit service interfaces, not shared tables.
 
-- `auth`: register/login and JWT flow
-- `chat_core`: conversation, membership, message command path, read receipt, read-model rebuild
-- `presence`: ownership and instance routing support
-- `notification`: realtime delivery and consumer-side dedupe
-- `events`: outbox, publisher switching, DLT capture, replay, CQRS observability
-- `search`: Postgres-backed message search
-- `user`: user entity and mapping
-
-High-level style:
-
-- API layer in `api/rest`
-- Feature modules in `domain/...`
-- Shared app concerns in `app/...`
-- Security/config/runtime wiring in `infrastructure/...`
+---
 
 ## Core Features
 
-### Chat and Membership
+### 1. Idempotent Message Send
 
-- Create direct conversations
-- Create group conversations with owner and room name
-- Add/remove members
-- Member leave flow with orphan-room protection
-- Authorization guardrails for non-members
+**Intent:** A client retry — caused by timeout, lag, or double-tap — must never create duplicate messages.
 
-### Message Delivery
+**How it works:**
+- Client supplies an optional `idempotency-key` per send request.
+- Before inserting, the system checks for an existing message matching `(senderId, conversationId, idempotencyKey)`.
+- If two concurrent requests race past the pre-check, a `UNIQUE` constraint on the DB catches the collision. The loser catches `DataIntegrityViolationException` and re-queries the winner's result.
+- A Redis distributed lock serializes concurrent sends for the same key, eliminating the race window in the common case.
 
-- Send message with optional idempotency key
-- History query with membership enforcement
-- Read receipt / mark-read flow
-- Membership-aware unread counters
+**Result:** Sending the same request twice always returns the same `messageId`. The message appears once.
 
-### CQRS-lite Read Model
+---
 
-- Conversation list projection updated on command path
-- Rebuild and backfill support for read-model recovery
-- Projection equivalence tests between runtime updates and rebuild path
+### 2. Outbox Pattern — Guaranteed Event Delivery
 
-### Distributed / Reliability
+**Intent:** A message persisted to the DB must always produce a downstream event — even if Kafka is down at the moment of send.
 
-- Outbox persistence in same transaction as message creation
-- Switchable event publisher mode
-- Kafka consumer retry and failure classification
-- DLT capture and replay workflow
-- Delivered-message dedupe on consumer side
-- Multi-instance ownership routing and rebalance test coverage
+**How it works:**
+- The send-message transaction writes both the `MessageEntity` and an `EventOutboxEntity` in a single DB commit. If the commit fails, neither exists. If it succeeds, the event is guaranteed to be dispatched eventually.
+- A background scheduler polls `PENDING` outbox records, claims them (`PENDING → PROCESSING`) with a row-level lock, publishes to Kafka, then marks them `SENT`.
+- Failed records transition to `FAILED` and are eligible for replay. The claim query uses an intentional status update to prevent double-processing across concurrent workers.
 
-## Key API Areas
+**Result:** Event delivery is decoupled from the HTTP response. Kafka outages do not cause silent message loss.
 
-- `POST /api/v1/auth/register`
-- `POST /api/v1/auth/login`
-- `POST /api/v1/conversations/direct`
-- `POST /api/v1/conversations/group`
-- `GET /api/v1/conversations`
-- `GET /api/v1/conversations/{id}/members`
-- `POST /api/v1/conversations/{id}/members`
-- `DELETE /api/v1/conversations/{id}/members/{memberUserId}`
-- `DELETE /api/v1/conversations/{id}/members/me`
-- `POST /api/v1/messages`
-- `GET /api/v1/messages`
-- `POST /api/v1/messages/read`
-- `GET /api/v1/search/messages`
-- internal ops endpoints under `/api/v1/internal/...`
+---
 
-## Local Run
+### 3. Dead Letter Capture & Replay
 
-Application module:
+**Intent:** Events that repeatedly fail consumer-side processing must not be silently discarded — they need to be recoverable.
+
+**How it works:**
+- Kafka consumer retries failed events up to a configured limit using Spring Kafka's retry support.
+- Exhausted events are captured into a `DeadLetterEventEntity` with full payload, failure reason, and retry count.
+- An internal API triggers replay: failed records are re-published to the original topic, with status transitions tracked (`PENDING → REPLAYED` or `FAILED`).
+- Dry-run mode lets operators preview what would be replayed before committing.
+
+**Result:** No event is permanently lost. Recovery is operator-initiated, auditable, and safe to re-run.
+
+---
+
+### 4. Distributed Realtime Routing
+
+**Intent:** In a multi-instance deployment, a WebSocket push must reach the specific server instance that holds the target user's connection — not broadcast to all.
+
+**How it works:**
+- Each API request calls `markOnline(userId)` + `claimOwnership(userId)`, writing the current `instanceId` into Redis with a configurable TTL.
+- When a Kafka consumer receives a `MessageCreated` event, it fetches all conversation members from the DB (one query), then checks which of those users are owned by the current instance.
+- Ownership checks for N members are sent as a single Redis pipeline — one round-trip regardless of member count — instead of N sequential `HGET` calls.
+- Only users owned by the current instance receive a WebSocket push. Others will be handled by their respective instances consuming from the same Kafka topic.
+
+**Result:** Correct fan-out across instances. No duplicate pushes. Redis overhead is O(1) network round-trips per Kafka event.
+
+---
+
+### 5. Consumer-Side Deduplication
+
+**Intent:** Kafka's at-least-once delivery means a consumer may see the same event more than once. The user must never receive a duplicate notification.
+
+**How it works:**
+- Before pushing over WebSocket, the consumer calls `DeliveryRecorder.recordIfNotDuplicate(messageId, userId)`.
+- This writes a dedup record in its own `@Transactional` boundary — committed before the WebSocket push, not wrapped around it.
+- If the record already exists (unique constraint violation), the push is skipped.
+- Separating the DB commit from the WebSocket push prevents a common bug: if the push succeeds but the transaction later rolls back, the next retry would push again.
+
+**Result:** Each user receives each message notification exactly once, even under retry storms or consumer rebalance.
+
+---
+
+### 6. CQRS-lite Read Model
+
+**Intent:** Loading a user's conversation list should not require joining multiple tables at query time.
+
+**How it works:**
+- A dedicated `conversation_list_view` table is maintained as a projection. It stores pre-computed fields: last message snippet, last message timestamp, unread count, and peer info.
+- The projection is updated inline on every write event: message created, member joined, member left, conversation read.
+- If the projection drifts (e.g. after a bug fix or data migration), a rebuild API re-derives the full state from source tables in paginated batches. Each page runs in its own transaction to avoid long-held DB connections.
+- Rebuild tracks progress in-memory and exposes a status endpoint so the operation is observable.
+
+**Result:** Conversation list = single table scan, no joins, accurate unread counters, recoverable if it ever goes stale.
+
+---
+
+## API Reference
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/v1/auth/register` | Register a new user |
+| `POST` | `/api/v1/auth/login` | Login and receive JWT |
+| `POST` | `/api/v1/conversations/direct` | Create a direct conversation |
+| `POST` | `/api/v1/conversations/group` | Create a group conversation |
+| `GET` | `/api/v1/conversations` | List conversations for the authenticated user |
+| `GET` | `/api/v1/conversations/{id}/members` | List members of a conversation |
+| `POST` | `/api/v1/conversations/{id}/members` | Add a member to a group |
+| `DELETE` | `/api/v1/conversations/{id}/members/{userId}` | Remove a member from a group |
+| `DELETE` | `/api/v1/conversations/{id}/members/me` | Leave a group |
+| `POST` | `/api/v1/messages` | Send a message |
+| `GET` | `/api/v1/messages` | Get message history for a conversation |
+| `POST` | `/api/v1/messages/read` | Mark a conversation as read |
+| `GET` | `/api/v1/search/messages` | Full-text message search |
+| `GET` | `/api/v1/presence/{userId}` | Check if a user is online |
+| `GET` | `/api/v1/internal/...` | Internal ops: outbox replay, DLT replay, rebuild |
+
+---
+
+## Local Setup
+
+**Prerequisites:** Java 21, Maven, PostgreSQL, Redis, Kafka
 
 ```bash
+# Run the application
 cd chat
-```
-
-Run tests:
-
-```bash
-mvn -q test
-```
-
-Run the application:
-
-```bash
 mvn spring-boot:run
 ```
 
-Notes:
+Environment variables expected (or configure in `application.yml`):
 
-- Tests run with H2 and do not require PostgreSQL.
-- Production-style local setup is designed around PostgreSQL + Redis + Kafka.
-- Some sprint evidence/runbook files at repo root describe local infra and verification flows in more detail.
+```
+SPRING_DATASOURCE_URL
+SPRING_DATASOURCE_USERNAME
+SPRING_DATASOURCE_PASSWORD
+SPRING_KAFKA_BOOTSTRAP_SERVERS
+SPRING_DATA_REDIS_HOST
+APP_JWT_SECRET
+APP_REALTIME_INSTANCE_ID   # unique per instance; auto-generated if omitted
+```
 
-## Demo Flows
-
-### 1. Basic Chat Flow
-
-- register two users
-- create direct conversation
-- send message
-- fetch conversation list
-- fetch message history
-
-### 2. Membership and Read Model Flow
-
-- create group conversation
-- add member
-- send messages before and after join
-- verify unread/read behavior
-- remove or leave member
-- verify projection row cleanup
-
-### 3. Reliability Flow
-
-- send message
-- persist outbox item
-- simulate consumer/publisher failure
-- observe retry / failed state / DLT
-- replay and recover delivery
-
-## Verification Commands
-
-From `chat/`:
+> Tests use H2 in-memory and do not require PostgreSQL, Redis, or Kafka.
 
 ```bash
+cd chat
 mvn -q test
 ```
-
-Focused examples used during development:
-
-```bash
-mvn -q "-Dtest=MembershipHttpIntegrationTests,Phase1MembershipReadModelIntegrationTests,Sprint62CqrsIntegrationTests" test
-mvn -q "-Dtest=ConversationListProjectionRebuildIntegrationTests,ConversationListPerformanceSmokeTests" test
-mvn -q "-Dtest=KafkaDltE2EIntegrationTests,OutboxReplayIntegrationTests,IdempotencyLockStrategyIntegrationTests" test
-```
-
-## Tradeoffs
-
-- Chosen architecture: modular monolith over microservices
-  - faster delivery
-  - easier local setup
-  - still strong enough to demonstrate boundaries and distributed concerns
-- CQRS-lite instead of full CQRS/event sourcing
-  - explicit read-model separation
-  - less accidental complexity
-- Postgres-backed search instead of Elasticsearch
-  - enough for showcase scope
-  - avoids unnecessary infrastructure
-
-## Out of Scope
-
-- Rich collaboration features like reactions, attachments, threads, mentions
-- Advanced full-text/search cluster architecture
-- Full microservice decomposition
-- Heavy role/permission product modeling beyond `OWNER` and `MEMBER`
-- Product-heavy UX concerns
-
-The repo is optimized for backend engineering discussion, not for becoming a full chat product clone.
